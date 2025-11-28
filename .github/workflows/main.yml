@@ -1,13 +1,11 @@
 name: RDP - Secure Tailscale Access
 
 on:
-  # Allows you to manually trigger the workflow from the GitHub Actions UI
   workflow_dispatch:
 
 jobs:
   secure-rdp:
     runs-on: windows-latest
-    # Set a long timeout for the RDP session (60 hours)
     timeout-minutes: 3600
 
     steps:
@@ -25,10 +23,8 @@ jobs:
       - name: 🔗 Establish Tailscale Connection
         run: |
           Write-Host "--- Connecting to Tailnet ---"
-          # Bring up Tailscale
           & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-runner-$env:GITHUB_RUN_ID
           
-          # Wait for Tailscale to assign an IP address
           $tsIP = $null
           $retries = 0
           while (-not $tsIP -and $retries -lt 15) {
@@ -51,6 +47,7 @@ jobs:
           Write-Host "--- Configuring RDP and Firewall ---"
           
           # 1. Enable RDP and disable NLA
+          Write-Host "Enabling RDP connections and disabling NLA..."
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
                              -Name "fDenyTSConnections" -Value 0 -Force
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
@@ -58,14 +55,20 @@ jobs:
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
                              -Name "SecurityLayer" -Value 0 -Force
 
+          # Force a restart of the service early to ensure registry changes are active
+          Write-Host "Restarting TermService to apply registry changes..."
+          Restart-Service -Name TermService -Force
+          Start-Sleep -Seconds 5 # Give the service time to restart
+
           # 2. Add a retry loop to ensure the Tailscale adapter is available
           $tsIndex = $null
           $retries = 0
           Write-Host "Waiting for Tailscale network adapter to register..."
-          while (-not $tsIndex -and $retries -lt 10) { 
+          while (-not $tsIndex -and $retries -lt 15) { 
               $tsIndex = (Get-NetAdapter | Where-Object { $_.Description -like "*Tailscale*" }).InterfaceIndex
               if (-not $tsIndex) {
-                  Start-Sleep -Seconds 3 # Wait 3 seconds before retrying
+                  Write-Host "Adapter not found (Attempt $retries). Waiting 3 seconds..."
+                  Start-Sleep -Seconds 3
                   $retries++
               }
           }
@@ -76,15 +79,21 @@ jobs:
           }
           
           # 3. Securely configure the Firewall
+          Write-Host "Configuring Firewall rule on interface index: $tsIndex"
+          
           netsh advfirewall firewall delete rule name="RDP-Tailscale"
           
           # Allow RDP ONLY for the Tailscale network interface
           netsh advfirewall firewall add rule name="RDP-Tailscale" ^
-            dir=in action=allow protocol=TCP localport=3389 interface=$tsIndex
+            dir=in action=allow protocol=TCP localport=3389 interface=$tsIndex | Out-Host
             
-          Write-Host "RDP Firewall rule created and restricted to Tailscale interface index: $tsIndex"
-          
-          Restart-Service -Name TermService -Force
+          # Verify the firewall rule was added
+          $rule = netsh advfirewall firewall show rule name="RDP-Tailscale"
+          if ($rule -notlike "*Interface Index:*$tsIndex*") {
+              Write-Error "Failed to verify the firewall rule with the correct interface index. Connection will likely fail."
+          }
+
+          Write-Host "RDP Firewall configuration complete."
 
       - name: 👤 Create RDP User with Secure Password
         run: |
