@@ -35,7 +35,7 @@ jobs:
           }
           
           if (-not $tsIP) {
-              Write-Error "Tailscale IP not assigned. Exiting."
+              Write-Error "Tailscale IP not assigned. **Check TAILSCALE_AUTH_KEY and connection status in Tailscale console.** Exiting."
               exit 1
           }
           
@@ -46,6 +46,10 @@ jobs:
         run: |
           Write-Host "--- Configuring RDP and Firewall ---"
           
+          # GUARANTEED INITIAL WAIT: Give Windows time to register the adapter after the previous step
+          Write-Host "Initial delay to allow OS to register the Tailscale network adapter..."
+          Start-Sleep -Seconds 10 
+
           # 1. Enable RDP and disable NLA
           Write-Host "Enabling RDP connections and disabling NLA..."
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
@@ -63,7 +67,7 @@ jobs:
           # 2. Add a retry loop to ensure the Tailscale adapter is available
           $tsIndex = $null
           $retries = 0
-          Write-Host "Waiting for Tailscale network adapter to register..."
+          Write-Host "Starting check for Tailscale network adapter..."
           while (-not $tsIndex -and $retries -lt 15) { 
               $tsIndex = (Get-NetAdapter | Where-Object { $_.Description -like "*Tailscale*" }).InterfaceIndex
               if (-not $tsIndex) {
@@ -90,7 +94,7 @@ jobs:
           # Verify the firewall rule was added
           $rule = netsh advfirewall firewall show rule name="RDP-Tailscale"
           if ($rule -notlike "*Interface Index:*$tsIndex*") {
-              Write-Error "Failed to verify the firewall rule with the correct interface index. Connection will likely fail."
+              Write-Error "Failed to verify the firewall rule with the correct interface index. **Connection will likely fail due to firewall.**"
           }
 
           Write-Host "RDP Firewall configuration complete."
@@ -127,13 +131,35 @@ jobs:
               exit 1
           }
 
+      - name: 🔍 Dump Network Configuration for Diagnosis
+        run: |
+          Write-Host "========================================"
+          Write-Host "--- NETWORK DIAGNOSTICS STARTING ---"
+          Write-Host "========================================"
+          
+          Write-Host "`n--- Tailscale IP and Connectivity Check ---"
+          & "$env:ProgramFiles\Tailscale\tailscale.exe" status
+          
+          Write-Host "`n--- Network Adapters and Indices ---"
+          Get-NetAdapter | Format-Table -AutoSize
+          
+          Write-Host "`n--- RDP-Tailscale Firewall Rule Details ---"
+          netsh advfirewall firewall show rule name="RDP-Tailscale"
+          
+          Write-Host "`n--- Remote Desktop Service Status ---"
+          Get-Service -Name TermService | Format-List Status, Name, DisplayName
+          
+          Write-Host "========================================"
+          Write-Host "--- DIAGNOSTICS COMPLETE ---"
+          Write-Host "========================================"
+
       - name: ✅ Verify RDP Accessibility
         run: |
-          Write-Host "--- Verifying Connectivity ---"
+          Write-Host "--- Final Connectivity Test ---"
           
           $testResult = Test-NetConnection -ComputerName $env:TAILSCALE_IP -Port 3389
           if (-not $testResult.TcpTestSucceeded) {
-              Write-Error "TCP connection to RDP port 3389 failed. The firewall rule may be incorrect."
+              Write-Error "TCP connection to RDP port 3389 failed. Review the 'Dump Network Configuration' step for errors."
               exit 1
           }
           Write-Host "TCP connectivity via Tailscale successful!"
