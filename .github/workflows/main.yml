@@ -9,12 +9,14 @@ jobs:
     timeout-minutes: 3600
 
     steps:
-      - name: Disable Windows Testing Mode
+      - name: Ensure Windows boots in NORMAL MODE (disable Test Mode)
         run: |
-          # Executes the command to disable test-signing, removing the "Testing Mode" watermark.
-          # Using cmd /c avoids PowerShell parameter parsing issues with native bcdedit.
-          cmd /c "bcdedit /set testsigning off"
-          Write-Host "Attempted to disable Windows Test-Signing."
+          # Disable Windows Test Mode
+          bcdedit /set testsigning off
+          bcdedit /set nointegritychecks off
+
+          # Display current boot configuration for logging
+          bcdedit /enum
 
       - name: Configure Core RDP Settings
         run: |
@@ -33,7 +35,7 @@ jobs:
           netsh advfirewall firewall add rule name="RDP-Tailscale" `
             dir=in action=allow protocol=TCP localport=3389
 
-          # (Optional) Restart the Remote Desktop service to ensure changes take effect
+          # Restart the Remote Desktop service to ensure changes take effect
           Restart-Service -Name TermService -Force
 
       - name: Create RDP User with Secure Password
@@ -75,10 +77,8 @@ jobs:
 
       - name: Establish Tailscale Connection
         run: |
-          # Bring up Tailscale with the provided auth key and set a unique hostname
           & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-runner-$env:GITHUB_RUN_ID
           
-          # Wait for Tailscale to assign an IP
           $tsIP = $null
           $retries = 0
           while (-not $tsIP -and $retries -lt 10) {
@@ -97,7 +97,6 @@ jobs:
         run: |
           Write-Host "Tailscale IP: $env:TAILSCALE_IP"
           
-          # Test connectivity using Test-NetConnection against the Tailscale IP on port 3389
           $testResult = Test-NetConnection -ComputerName $env:TAILSCALE_IP -Port 3389
           if (-not $testResult.TcpTestSucceeded) {
               Write-Error "TCP connection to RDP port 3389 failed"
@@ -113,7 +112,6 @@ jobs:
           Write-Host "Password: $(echo $env:RDP_CREDS)"
           Write-Host "==================`n"
           
-          # Keep runner active indefinitely (or until manually cancelled)
           while ($true) {
               Write-Host "[$(Get-Date)] RDP Active - Use Ctrl+C in workflow to terminate"
               Start-Sleep -Seconds 300
