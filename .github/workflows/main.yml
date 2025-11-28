@@ -12,9 +12,9 @@ jobs:
       - name: Disable Windows Testing Mode
         run: |
           # Executes the command to disable test-signing, removing the "Testing Mode" watermark.
-          # The command will fail if it's already disabled, but the -ErrorAction Ignore handles it.
-          bcdedit /set testsigning off -ErrorAction Ignore
-          Write-Host "Confirmed that Windows Test-Signing is disabled."
+          # Using cmd /c avoids PowerShell parameter parsing issues with native bcdedit.
+          cmd /c "bcdedit /set testsigning off"
+          Write-Host "Attempted to disable Windows Test-Signing."
 
       - name: Configure Core RDP Settings
         run: |
