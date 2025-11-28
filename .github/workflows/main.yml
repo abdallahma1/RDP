@@ -50,8 +50,12 @@ jobs:
           Write-Host "Ensuring TermService is running and stable..."
           Get-Service -Name TermService | Set-Service -StartupType Automatic -Status Running -Force
           Start-Sleep -Seconds 5 # Give service time to settle
+
+          # 2. Add an initial guaranteed wait for the OS to register the Tailscale adapter
+          Write-Host "Initial guaranteed wait (15s) for OS to register network adapter..."
+          Start-Sleep -Seconds 15 
           
-          # 2. Enable RDP and disable NLA
+          # 3. Enable RDP and disable NLA
           Write-Host "Enabling RDP connections and disabling NLA..."
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
                              -Name "fDenyTSConnections" -Value 0 -Force
@@ -60,14 +64,14 @@ jobs:
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
                              -Name "SecurityLayer" -Value 0 -Force
           
-          # 3. Wait for and retrieve the Tailscale adapter Index
+          # 4. Wait for and retrieve the Tailscale adapter Index
           $tsIndex = $null
           $retries = 0
-          Write-Host "Starting check for Tailscale network adapter..."
-          while (-not $tsIndex -and $retries -lt 20) {
+          Write-Host "Starting check for Tailscale network adapter (Retry Loop)..."
+          while (-not $tsIndex -and $retries -lt 15) { 
               $tsIndex = (Get-NetAdapter | Where-Object { $_.Description -like "*Tailscale*" }).InterfaceIndex
               if (-not $tsIndex) {
-                  Write-Host "Adapter not found (Attempt $retries). Waiting 3 seconds..."
+                  Write-Host "Adapter still not found (Attempt $retries). Waiting 3 seconds..."
                   Start-Sleep -Seconds 3
                   $retries++
               }
@@ -78,7 +82,7 @@ jobs:
               exit 1
           }
           
-          # 4. Securely configure the Firewall
+          # 5. Securely configure the Firewall
           Write-Host "Configuring Firewall rule on interface index: $tsIndex"
           
           netsh advfirewall firewall delete rule name="RDP-Tailscale"
@@ -93,7 +97,7 @@ jobs:
               Write-Error "Failed to verify the firewall rule with the correct interface index. Connection will likely fail."
           }
 
-          Write-Host "RDP Firewall configuration complete. TermService status check passed."
+          Write-Host "RDP Firewall configuration complete."
 
       - name: 👤 Create RDP User with Secure Password
         run: |
