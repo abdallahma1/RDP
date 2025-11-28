@@ -15,7 +15,7 @@ jobs:
       - name: ⬇️ Install Tailscale
         run: |
           Write-Host "--- Installing Tailscale ---"
-          $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi" # Use a stable version URL
+          $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
           $installerPath = "$env:TEMP\tailscale.msi"
           
           Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath
@@ -25,13 +25,13 @@ jobs:
       - name: 🔗 Establish Tailscale Connection
         run: |
           Write-Host "--- Connecting to Tailnet ---"
-          # Bring up Tailscale with the required Auth Key and set a unique hostname
+          # Bring up Tailscale
           & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-runner-$env:GITHUB_RUN_ID
           
           # Wait for Tailscale to assign an IP address
           $tsIP = $null
           $retries = 0
-          while (-not $tsIP -and $retries -lt 15) { # Increased retries slightly
+          while (-not $tsIP -and $retries -lt 15) {
               Write-Host "Waiting for Tailscale IP (Attempt $retries)..."
               $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
               Start-Sleep -Seconds 5
@@ -39,11 +39,10 @@ jobs:
           }
           
           if (-not $tsIP) {
-              Write-Error "Tailscale IP not assigned after multiple retries. Exiting."
+              Write-Error "Tailscale IP not assigned. Exiting."
               exit 1
           }
           
-          # Store the Tailscale IP for subsequent steps
           echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
           Write-Host "Successfully connected. Tailscale IP: $tsIP"
 
@@ -55,16 +54,24 @@ jobs:
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
                              -Name "fDenyTSConnections" -Value 0 -Force
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
-                             -Name "UserAuthentication" -Value 0 -Force # Disables NLA
+                             -Name "UserAuthentication" -Value 0 -Force
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
                              -Name "SecurityLayer" -Value 0 -Force
 
-          # 2. Get the specific Interface Index for the Tailscale adapter
-          # This step now succeeds because Tailscale is installed and connected.
-          $tsIndex = (Get-NetAdapter | Where-Object { $_.Description -like "*Tailscale*" }).InterfaceIndex
+          # 2. Add a retry loop to ensure the Tailscale adapter is available
+          $tsIndex = $null
+          $retries = 0
+          Write-Host "Waiting for Tailscale network adapter to register..."
+          while (-not $tsIndex -and $retries -lt 10) { 
+              $tsIndex = (Get-NetAdapter | Where-Object { $_.Description -like "*Tailscale*" }).InterfaceIndex
+              if (-not $tsIndex) {
+                  Start-Sleep -Seconds 3 # Wait 3 seconds before retrying
+                  $retries++
+              }
+          }
           
           if (-not $tsIndex) {
-              Write-Error "Tailscale network adapter not found AFTER connection attempt. Exiting."
+              Write-Error "Tailscale network adapter not found after connection and wait attempts. Exiting."
               exit 1
           }
           
@@ -98,15 +105,12 @@ jobs:
           $rawPassword += $charSet.Special | Get-Random -Count 4
           $password = -join ($rawPassword | Sort-Object { Get-Random })
           
-          # Create user 'RDP'
           $securePass = ConvertTo-SecureString $password -AsPlainText -Force
           New-LocalUser -Name "RDP" -Password $securePass -AccountNeverExpires
           
-          # Add user to necessary groups
           Add-LocalGroupMember -Group "Administrators" -Member "RDP"
           Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP"
           
-          # Store credentials securely in the environment for display later
           echo "RDP_CREDS=User: RDP | Password: $password" >> $env:GITHUB_ENV
           
           if (-not (Get-LocalUser -Name "RDP")) {
@@ -118,7 +122,6 @@ jobs:
         run: |
           Write-Host "--- Verifying Connectivity ---"
           
-          # Test connectivity using Test-NetConnection against the Tailscale IP on port 3389
           $testResult = Test-NetConnection -ComputerName $env:TAILSCALE_IP -Port 3389
           if (-not $testResult.TcpTestSucceeded) {
               Write-Error "TCP connection to RDP port 3389 failed. The firewall rule may be incorrect."
@@ -133,12 +136,10 @@ jobs:
           Write-Host "=========================="
           Write-Host "Address: $env:TAILSCALE_IP"
           Write-Host "Username: RDP"
-          # Securely extract and display the password
           Write-Host "Password: $(echo $env:RDP_CREDS | Select-String -Pattern 'Password: (.*)' | ForEach-Object { $_.Matches.Groups[1].Value })"
           Write-Host "==========================`n"
           
-          # Keep runner active indefinitely (or until manually cancelled)
           while ($true) {
               Write-Host "[$(Get-Date)] RDP Session Active. Use Ctrl+C in GitHub to terminate workflow."
-              Start-Sleep -Seconds 300 # Sleep for 5 minutes
+              Start-Sleep -Seconds 300
           }
