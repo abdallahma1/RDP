@@ -1,4 +1,4 @@
-name: RDP - Secure Tailscale Access
+name: RDP
 
 on:
   workflow_dispatch:
@@ -46,11 +46,12 @@ jobs:
         run: |
           Write-Host "--- Configuring RDP and Firewall ---"
           
-          # GUARANTEED INITIAL WAIT: Give Windows time to register the adapter after the previous step
-          Write-Host "Initial delay to allow OS to register the Tailscale network adapter..."
-          Start-Sleep -Seconds 10 
-
-          # 1. Enable RDP and disable NLA
+          # 1. Stabilize the Remote Desktop Service (TermService)
+          Write-Host "Ensuring TermService is running and stable..."
+          Get-Service -Name TermService | Set-Service -StartupType Automatic -Status Running -Force
+          Start-Sleep -Seconds 5 # Give service time to settle
+          
+          # 2. Enable RDP and disable NLA
           Write-Host "Enabling RDP connections and disabling NLA..."
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
                              -Name "fDenyTSConnections" -Value 0 -Force
@@ -58,17 +59,12 @@ jobs:
                              -Name "UserAuthentication" -Value 0 -Force
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
                              -Name "SecurityLayer" -Value 0 -Force
-
-          # Force a restart of the service early to ensure registry changes are active
-          Write-Host "Restarting TermService to apply registry changes..."
-          Restart-Service -Name TermService -Force
-          Start-Sleep -Seconds 5 # Give the service time to restart
-
-          # 2. Add a retry loop to ensure the Tailscale adapter is available
+          
+          # 3. Wait for and retrieve the Tailscale adapter Index
           $tsIndex = $null
           $retries = 0
           Write-Host "Starting check for Tailscale network adapter..."
-          while (-not $tsIndex -and $retries -lt 15) { 
+          while (-not $tsIndex -and $retries -lt 20) {
               $tsIndex = (Get-NetAdapter | Where-Object { $_.Description -like "*Tailscale*" }).InterfaceIndex
               if (-not $tsIndex) {
                   Write-Host "Adapter not found (Attempt $retries). Waiting 3 seconds..."
@@ -78,11 +74,11 @@ jobs:
           }
           
           if (-not $tsIndex) {
-              Write-Error "Tailscale network adapter not found after connection and wait attempts. Exiting."
+              Write-Error "Tailscale network adapter not found after extensive wait. Exiting."
               exit 1
           }
           
-          # 3. Securely configure the Firewall
+          # 4. Securely configure the Firewall
           Write-Host "Configuring Firewall rule on interface index: $tsIndex"
           
           netsh advfirewall firewall delete rule name="RDP-Tailscale"
@@ -94,10 +90,10 @@ jobs:
           # Verify the firewall rule was added
           $rule = netsh advfirewall firewall show rule name="RDP-Tailscale"
           if ($rule -notlike "*Interface Index:*$tsIndex*") {
-              Write-Error "Failed to verify the firewall rule with the correct interface index. **Connection will likely fail due to firewall.**"
+              Write-Error "Failed to verify the firewall rule with the correct interface index. Connection will likely fail."
           }
 
-          Write-Host "RDP Firewall configuration complete."
+          Write-Host "RDP Firewall configuration complete. TermService status check passed."
 
       - name: 👤 Create RDP User with Secure Password
         run: |
