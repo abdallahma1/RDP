@@ -11,21 +11,31 @@ jobs:
     steps:
       - name: Configure Core RDP Settings
         run: |
-          # Enable Remote Desktop and disable Network Level Authentication (if needed)
+          # Enable Remote Desktop and disable Network Level Authentication (NLA) for simpler connection
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
                              -Name "fDenyTSConnections" -Value 0 -Force
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
-                             -Name "UserAuthentication" -Value 0 -Force
+                             -Name "UserAuthentication" -Value 0 -Force # Disables NLA
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
                              -Name "SecurityLayer" -Value 0 -Force
-
+          
+          # Get the Index for the Tailscale interface to create an interface-specific rule
+          # This is the key change to restrict access only to the Tailscale VPN
+          $tsIndex = (Get-NetAdapter | Where-Object { $_.Description -like "*Tailscale*" }).InterfaceIndex
+          
+          if (-not $tsIndex) {
+              Write-Error "Tailscale network adapter not found. Cannot set restricted RDP firewall rule."
+              exit 1
+          }
+          
           # Remove any existing rule with the same name to avoid duplication
           netsh advfirewall firewall delete rule name="RDP-Tailscale"
           
-          # For testing, allow any incoming connection on port 3389
-          netsh advfirewall firewall add rule name="RDP-Tailscale" `
-            dir=in action=allow protocol=TCP localport=3389
-
+          # Allow incoming connection on port 3389 ONLY for the Tailscale network interface
+          # This secures the runner by not exposing RDP to the public internet.
+          netsh advfirewall firewall add rule name="RDP-Tailscale" ^
+            dir=in action=allow protocol=TCP localport=3389 interface=$tsIndex
+          
           # (Optional) Restart the Remote Desktop service to ensure changes take effect
           Restart-Service -Name TermService -Force
 
